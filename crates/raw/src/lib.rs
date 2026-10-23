@@ -866,9 +866,21 @@ impl RawImage {
     /// The result is camera RGB (not white balanced), white level = 1.0, not oriented.
     pub fn develop(&self, method: Method) -> Result<Rgb32f> {
         let n = self.normalized()?;
-        let rgb = demosaic(&n, method);
+        let rgb = demosaic::demosaic_with(&n, method, self.demosaic_options(&n));
         drop(n);
         Ok(self.finish_demosaiced(rgb))
+    }
+
+    /// Experimental (local prototype): with `LIGHTCRAFT_XTRANS_WB=1` (or `=median` for the chroma-median pass as
+    /// well), non-Bayer mosaics are white balanced by the as-shot multipliers before demosaicing. Unset, this returns
+    /// the default options and [`Self::develop`] is unchanged.
+    fn demosaic_options(&self, n: &Normalized) -> demosaic::Options {
+        let mode = std::env::var("LIGHTCRAFT_XTRANS_WB").unwrap_or_default();
+        let non_bayer = n.cpp == 1 && n.cfa.as_ref().is_some_and(|c| !c.is_bayer());
+        if mode.is_empty() || mode == "0" || !non_bayer {
+            return demosaic::Options::default();
+        }
+        demosaic::Options { balance: self.wb_multipliers, chroma_median: mode == "median" }
     }
 
     /// The last steps of [`Self::develop`] for camera RGB made some other way (a denoiser that demosaics too) from
