@@ -114,6 +114,59 @@ pub fn demosaic(n: &Normalized, method: Method) -> Rgb32f {
     }
 }
 
+/// Options for [`demosaic_with`]. The default reproduces [`demosaic`] exactly.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Options {
+    /// Per-channel gains (camera RGB → white balanced, green = 1) applied to the mosaic before interpolation and
+    /// divided out afterwards, so colour-difference interpolation sees a balanced signal: in camera RGB, R − G and
+    /// B − G change with brightness across every edge, which the interpolator turns into colour fringes. Gains that
+    /// are not finite and positive are ignored.
+    pub balance: Option<[f32; 3]>,
+    /// Non-Bayer patterns only: replace each interpolated R and B by G plus the 3×3 median of R − G (B − G), a
+    /// false-colour suppression pass. Native samples are kept.
+    pub chroma_median: bool,
+}
+
+/// [`demosaic`] with [`Options`] (white balance before interpolation, false-colour suppression).
+pub fn demosaic_with(n: &Normalized, method: Method, opts: Options) -> Rgb32f {
+    let gains = opts.balance.filter(|g| g.iter().all(|v| v.is_finite() && *v > 0.0));
+    let balanced;
+    let src = match (&n.cfa, n.cpp, gains) {
+        (Some(cfa), 1, Some(g)) => {
+            let data = n
+                .data
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| {
+                    let (x, y) = (i % n.width.max(1), i / n.width.max(1));
+                    v * g.get(cfa.color_at(x, y) as usize).copied().unwrap_or(1.0)
+                })
+                .collect();
+            balanced = Normalized { width: n.width, height: n.height, cpp: 1, data, cfa: Some(cfa.clone()) };
+            &balanced
+        }
+        _ => n,
+    };
+    let mut out = demosaic(src, method);
+    if opts.chroma_median
+        && src.cpp == 1
+        && let Some(cfa) = &src.cfa
+        && !cfa.is_bayer()
+    {
+        let m = Mosaic { w: src.width, h: src.height, data: &src.data, cfa };
+        xtrans::chroma_median(&mut out, &m);
+    }
+    if let (Some(_), 1, Some(g)) = (&n.cfa, n.cpp, gains) {
+        let inv = g.map(|v| 1.0 / v);
+        for px in &mut out.data {
+            for c in 0..3 {
+                px[c] *= inv[c];
+            }
+        }
+    }
+    out
+}
+
 /// Build a mosaic from an RGB image by sampling each pixel's CFA colour (for tests and synthetic data).
 pub fn mosaic_from_rgb(img: &Rgb32f, cfa: &Cfa) -> Normalized {
     let data = (0..img.height).flat_map(|y| (0..img.width).map(move |x| (x, y))).map(|(x, y)| img.get(x, y)[cfa.color_at(x, y) as usize]).collect();
@@ -190,6 +243,26 @@ mod tests {
         }
         let out = run(&Rgb32f::filled(19, 14, [0.3, 0.55, 0.8]), &Cfa::xtrans(), Method::Ahd);
         assert!(out.data.iter().all(|p| (p[0] - 0.3).abs() < 1e-5 && (p[1] - 0.55).abs() < 1e-5 && (p[2] - 0.8).abs() < 1e-5));
+    }
+
+    #[test]
+    fn default_options_match_demosaic_and_balance_is_illuminant_invariant() {
+        let img = edgy_scene(48, 36);
+        let cfa = Cfa::xtrans();
+        let n = mosaic_from_rgb(&img, &cfa);
+        for m in [Method::Bilinear, Method::Ahd] {
+            assert_eq!(demosaic_with(&n, m, Options::default()).data, demosaic(&n, m).data);
+        }
+        // a balanced scene seen under a coloured illuminant, demosaiced with that illuminant's gains and balanced
+        // back, matches the neutral-illuminant result
+        let g = [1.15f32, 1.0, 2.8];
+        let cam = Rgb32f { width: img.width, height: img.height, data: img.data.iter().map(|p| [p[0] / g[0], p[1], p[2] / g[2]]).collect() };
+        let out = demosaic_with(&mosaic_from_rgb(&cam, &cfa), Method::Ahd, Options { balance: Some(g), chroma_median: false });
+        let back = Rgb32f { width: out.width, height: out.height, data: out.data.iter().map(|p| [p[0] * g[0], p[1], p[2] * g[2]]).collect() };
+        assert!(psnr(&back, &demosaic(&n, Method::Ahd), 0) > 90.0);
+        // invalid gains are ignored rather than poisoning the image
+        let bad = Options { balance: Some([f32::NAN, 1.0, 0.0]), chroma_median: true };
+        assert!(demosaic_with(&n, Method::Ahd, bad).data.iter().all(|p| p.iter().all(|v| v.is_finite())));
     }
 
     #[test]

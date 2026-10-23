@@ -202,6 +202,39 @@ pub(crate) fn directional(m: &Mosaic) -> Rgb32f {
     out
 }
 
+/// False-colour suppression: every interpolated R and B becomes G plus the 3×3 median of that colour's difference
+/// to G (computed on the interpolated image, mirror-reflected at the borders). Native samples are kept.
+pub(crate) fn chroma_median(img: &mut Rgb32f, m: &Mosaic) {
+    let (w, h) = (img.width, img.height);
+    if w == 0 || h == 0 || img.data.len() != w * h {
+        return;
+    }
+    let diff: [Vec<f32>; 2] = [0usize, 2].map(|c| img.data.iter().map(|p| p[c] - p[1]).collect());
+    par_rows(&mut img.data, w, |y, row| {
+        let yi = y as isize;
+        let mut win = [0f32; 9];
+        for (x, px) in row.iter_mut().enumerate() {
+            let xi = x as isize;
+            let own = m.color(xi, yi) as usize;
+            for (di, c) in [0usize, 2].into_iter().enumerate() {
+                if c == own {
+                    continue;
+                }
+                let mut k = 0;
+                for dy in -1isize..=1 {
+                    for dx in -1isize..=1 {
+                        let j = super::reflect(yi + dy, h) * w + super::reflect(xi + dx, w);
+                        win[k] = diff[di].get(j).copied().unwrap_or(0.0);
+                        k += 1;
+                    }
+                }
+                win.sort_unstable_by(|a, b| a.total_cmp(b));
+                px[c] = px[1] + win[4];
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
