@@ -23,9 +23,9 @@ fn load(p: &Path) -> Rgb32f {
     let b = std::fs::read(p).unwrap();
     let w = u32::from_le_bytes(b[0..4].try_into().unwrap()) as usize;
     let h = u32::from_le_bytes(b[4..8].try_into().unwrap()) as usize;
-    let f: Vec<f32> = b[8..].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+    let f: Vec<f32> = b[8..].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
     assert_eq!(f.len(), w * h * 3, "{}", p.display());
-    Rgb32f { width: w, height: h, data: f.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect() }
+    Rgb32f { width: w, height: h, data: f.as_chunks::<3>().0.to_vec() }
 }
 
 fn save(p: &Path, img: &Rgb32f) {
