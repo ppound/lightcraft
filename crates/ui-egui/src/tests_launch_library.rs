@@ -140,7 +140,9 @@ fn snapshot(dir: &Path) -> std::collections::BTreeMap<PathBuf, (Vec<u8>, std::ti
             if m.is_dir() {
                 todo.push(p.clone());
             }
-            let bytes = if m.is_file() { std::fs::read(&p).unwrap() } else { Vec::new() };
+            // (Windows refuses to read a held `catalog.lock` (`LockFileEx` locks are mandatory): such a file is
+            // compared by length and modification time)
+            let bytes = if m.is_file() { std::fs::read(&p).unwrap_or_else(|_| m.len().to_le_bytes().to_vec()) } else { Vec::new() };
             out.insert(p.strip_prefix(dir).unwrap().to_path_buf(), (bytes, m.modified().unwrap()));
         }
     }
