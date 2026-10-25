@@ -117,6 +117,10 @@ pub fn demosaic_with(n: &Normalized, method: Method, opts: Options) -> Rgb32f {
         },
         (None, _) => Rgb32f { width: w, height: h, data: n.data.iter().map(|&v| [v; 3]).collect() },
         (Some(cfa), _) => {
+            // every interpolator below indexes `w × h` samples: a shorter buffer gets the empty image
+            if w.checked_mul(h).is_none_or(|len| n.data.len() < len) {
+                return Rgb32f::new(w, h);
+            }
             let m = Mosaic { w, h, data: &n.data, cfa };
             if !cfa.is_bayer() {
                 return match method {
@@ -347,5 +351,19 @@ mod tests {
         let t = std::time::Instant::now();
         let _ = demosaic(&n, Method::Ahd);
         println!("X-Trans directional: {:.1} MP/s", (w * h) as f64 / 1e6 / t.elapsed().as_secs_f64());
+    }
+
+    #[test]
+    fn a_short_mosaic_gives_the_empty_image_instead_of_panicking() {
+        // `Normalized` fields are public: a buffer shorter than `width × height` reached the
+        // interpolators, which index every sample (the X-Trans fallback panicked past the end)
+        for cfa in [Cfa::xtrans(), Cfa::bayer("RGGB").unwrap()] {
+            let mut n = mosaic_from_rgb(&edgy_scene(48, 36), &cfa);
+            n.data.truncate(48 * 36 - 100);
+            for m in [Method::Bilinear, Method::Ppg, Method::Ahd] {
+                let out = demosaic(&n, m);
+                assert_eq!((out.width, out.height, out.data.len()), (48, 36, 48 * 36), "{m:?}");
+            }
+        }
     }
 }
