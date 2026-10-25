@@ -18,16 +18,13 @@ use std::time::Instant;
 struct Variant {
     name: &'static str,
     method: Method,
-    wb: bool,
-    median: bool,
 }
 
-const VARIANTS: [Variant; 5] = [
-    Variant { name: "bilinear", method: Method::Bilinear, wb: false, median: false },
-    Variant { name: "current", method: Method::Ahd, wb: false, median: false },
-    Variant { name: "+median", method: Method::Ahd, wb: false, median: true },
-    Variant { name: "+wb", method: Method::Ahd, wb: true, median: false },
-    Variant { name: "+wb+median", method: Method::Ahd, wb: true, median: true },
+/// X-Trans: `Ppg` is the directional interpolation, `Ahd` the classified LMMSE + residual interpolation.
+const VARIANTS: [Variant; 3] = [
+    Variant { name: "bilinear", method: Method::Bilinear },
+    Variant { name: "directional", method: Method::Ppg },
+    Variant { name: "xtrans-ri", method: Method::Ahd },
 ];
 
 fn save_jpeg(path: &Path, img: &Rgb32f, wb: [f32; 3]) {
@@ -107,7 +104,7 @@ fn main() {
         file_count += 1;
 
         for (vi, v) in VARIANTS.iter().enumerate() {
-            let opts = Options { balance: v.wb.then_some(wb), chroma_median: v.median };
+            let opts = Options { balance: Some(wb) };
             let t0 = Instant::now();
             let out = demosaic_with(&normalized, v.method, opts);
             let ms = t0.elapsed().as_secs_f64() * 1e3;

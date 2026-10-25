@@ -5,8 +5,13 @@
 //! - [`Method::Ppg`] — Patterned Pixel Grouping (Chuan-kai Lin): gradient-selected green, colour-difference R/B.
 //! - [`Method::Ahd`] — Adaptive Homogeneity-Directed (Hirakawa & Parks, IEEE TIP 2005): horizontal/vertical
 //!   candidates chosen per pixel by CIELab homogeneity. The quality default for Bayer sensors.
-//! - Non-Bayer patterns (X-Trans, …) always use `xtrans::directional`, our own edge-weighted colour-difference
-//!   interpolation.
+//!
+//! X-Trans (and other non-Bayer patterns):
+//! - [`Method::Ahd`] → [`xtrans_ri`]: on the white-balanced mosaic ([`Options::balance`]), a classified linear
+//!   (LMMSE) green trained on real X-Trans raws, then red and blue by residual interpolation. X-Trans in any phase,
+//!   at least 24 × 24; otherwise `xtrans::directional`.
+//! - [`Method::Ppg`] → `xtrans::directional`: our own edge-weighted colour-difference interpolation (faster).
+//! - [`Method::Bilinear`] → bilinear.
 //!
 //! Every method reproduces a constant-colour mosaic exactly.
 
@@ -14,6 +19,8 @@ mod ahd;
 mod bilinear;
 mod ppg;
 mod xtrans;
+mod xtrans_ri;
+mod xtrans_taps;
 
 use crate::{Cfa, Normalized, Rgb32f};
 use serde::{Deserialize, Serialize};
@@ -73,6 +80,21 @@ impl Mosaic<'_> {
 
 /// Demosaic normalised raw data. `cpp == 3` data is returned as is; monochrome data is replicated to grey.
 pub fn demosaic(n: &Normalized, method: Method) -> Rgb32f {
+    demosaic_with(n, method, Options::default())
+}
+
+/// Options for [`demosaic_with`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Options {
+    /// White-balance gains (camera RGB → balanced; the as-shot multipliers) for the X-Trans demosaic, which
+    /// interpolates the balanced mosaic: in camera RGB, R − G and B − G change with brightness across every edge,
+    /// and interpolation turns that into colour fringes. Bayer methods ignore it, as they do gains that are not
+    /// finite and positive.
+    pub balance: Option<[f32; 3]>,
+}
+
+/// [`demosaic`] with [`Options`].
+pub fn demosaic_with(n: &Normalized, method: Method, opts: Options) -> Rgb32f {
     let (w, h) = (n.width, n.height);
     if w == 0 || h == 0 {
         return Rgb32f::new(w, h);
@@ -99,7 +121,8 @@ pub fn demosaic(n: &Normalized, method: Method) -> Rgb32f {
             if !cfa.is_bayer() {
                 return match method {
                     Method::Bilinear => bilinear::bilinear(&m),
-                    _ => xtrans::directional(&m),
+                    Method::Ppg => xtrans::directional(&m),
+                    Method::Ahd => xtrans_ri::demosaic(&m, opts.balance).unwrap_or_else(|| xtrans::directional(&m)),
                 };
             }
             if w < 4 || h < 4 {
@@ -112,59 +135,6 @@ pub fn demosaic(n: &Normalized, method: Method) -> Rgb32f {
             }
         }
     }
-}
-
-/// Options for [`demosaic_with`]. The default reproduces [`demosaic`] exactly.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Options {
-    /// Per-channel gains (camera RGB → white balanced, green = 1) applied to the mosaic before interpolation and
-    /// divided out afterwards, so colour-difference interpolation sees a balanced signal: in camera RGB, R − G and
-    /// B − G change with brightness across every edge, which the interpolator turns into colour fringes. Gains that
-    /// are not finite and positive are ignored.
-    pub balance: Option<[f32; 3]>,
-    /// Non-Bayer patterns only: replace each interpolated R and B by G plus the 3×3 median of R − G (B − G), a
-    /// false-colour suppression pass. Native samples are kept.
-    pub chroma_median: bool,
-}
-
-/// [`demosaic`] with [`Options`] (white balance before interpolation, false-colour suppression).
-pub fn demosaic_with(n: &Normalized, method: Method, opts: Options) -> Rgb32f {
-    let gains = opts.balance.filter(|g| g.iter().all(|v| v.is_finite() && *v > 0.0));
-    let balanced;
-    let src = match (&n.cfa, n.cpp, gains) {
-        (Some(cfa), 1, Some(g)) => {
-            let data = n
-                .data
-                .iter()
-                .enumerate()
-                .map(|(i, &v)| {
-                    let (x, y) = (i % n.width.max(1), i / n.width.max(1));
-                    v * g.get(cfa.color_at(x, y) as usize).copied().unwrap_or(1.0)
-                })
-                .collect();
-            balanced = Normalized { width: n.width, height: n.height, cpp: 1, data, cfa: Some(cfa.clone()) };
-            &balanced
-        }
-        _ => n,
-    };
-    let mut out = demosaic(src, method);
-    if opts.chroma_median
-        && src.cpp == 1
-        && let Some(cfa) = &src.cfa
-        && !cfa.is_bayer()
-    {
-        let m = Mosaic { w: src.width, h: src.height, data: &src.data, cfa };
-        xtrans::chroma_median(&mut out, &m);
-    }
-    if let (Some(_), 1, Some(g)) = (&n.cfa, n.cpp, gains) {
-        let inv = g.map(|v| 1.0 / v);
-        for px in &mut out.data {
-            for c in 0..3 {
-                px[c] *= inv[c];
-            }
-        }
-    }
-    out
 }
 
 /// Build a mosaic from an RGB image by sampling each pixel's CFA colour (for tests and synthetic data).
@@ -246,23 +216,26 @@ mod tests {
     }
 
     #[test]
-    fn default_options_match_demosaic_and_balance_is_illuminant_invariant() {
+    fn balance_reaches_x_trans_only_and_is_illuminant_invariant() {
         let img = edgy_scene(48, 36);
-        let cfa = Cfa::xtrans();
-        let n = mosaic_from_rgb(&img, &cfa);
-        for m in [Method::Bilinear, Method::Ahd] {
-            assert_eq!(demosaic_with(&n, m, Options::default()).data, demosaic(&n, m).data);
+        // Bayer methods ignore it
+        let bayer = mosaic_from_rgb(&img, &Cfa::bayer("RGGB").unwrap());
+        for m in [Method::Bilinear, Method::Ppg, Method::Ahd] {
+            let with = demosaic_with(&bayer, m, Options { balance: Some([1.9, 1.0, 1.6]) });
+            assert_eq!(with.data, demosaic(&bayer, m).data, "{m:?}");
         }
         // a balanced scene seen under a coloured illuminant, demosaiced with that illuminant's gains and balanced
         // back, matches the neutral-illuminant result
+        let cfa = Cfa::xtrans();
+        let neutral = demosaic(&mosaic_from_rgb(&img, &cfa), Method::Ahd);
         let g = [1.15f32, 1.0, 2.8];
         let cam = Rgb32f { width: img.width, height: img.height, data: img.data.iter().map(|p| [p[0] / g[0], p[1], p[2] / g[2]]).collect() };
-        let out = demosaic_with(&mosaic_from_rgb(&cam, &cfa), Method::Ahd, Options { balance: Some(g), chroma_median: false });
+        let out = demosaic_with(&mosaic_from_rgb(&cam, &cfa), Method::Ahd, Options { balance: Some(g) });
         let back = Rgb32f { width: out.width, height: out.height, data: out.data.iter().map(|p| [p[0] * g[0], p[1], p[2] * g[2]]).collect() };
-        assert!(psnr(&back, &demosaic(&n, Method::Ahd), 0) > 90.0);
+        assert!(psnr(&back, &neutral, 0) > 80.0);
         // invalid gains are ignored rather than poisoning the image
-        let bad = Options { balance: Some([f32::NAN, 1.0, 0.0]), chroma_median: true };
-        assert!(demosaic_with(&n, Method::Ahd, bad).data.iter().all(|p| p.iter().all(|v| v.is_finite())));
+        let bad = Options { balance: Some([f32::NAN, 1.0, 0.0]) };
+        assert!(demosaic_with(&mosaic_from_rgb(&img, &cfa), Method::Ahd, bad).data.iter().all(|p| p.iter().all(|v| v.is_finite())));
     }
 
     #[test]

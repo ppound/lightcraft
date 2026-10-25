@@ -121,8 +121,8 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn lib(&self, method: Method, wb: bool, median: bool) -> Rgb32f {
-        demosaic_with(self.n, method, Options { balance: wb.then_some(self.gains), chroma_median: median })
+    fn lib(&self, method: Method, wb: bool) -> Rgb32f {
+        demosaic_with(self.n, method, Options { balance: wb.then_some(self.gains) })
     }
     fn m(&self) -> proto::M {
         proto::M::new(self.n, self.cfa, self.gains)
@@ -189,9 +189,10 @@ fn g_only(c: &Ctx, set: &str) -> Rgb32f {
 }
 
 const VARIANTS: &[Variant] = &[
-    v("bilinear", |c, _| c.lib(Method::Bilinear, false, false)),
-    v("current", |c, _| c.lib(Method::Ahd, false, false)),
-    v("wb+median", |c, _| c.lib(Method::Ahd, true, true)),
+    v("bilinear", |c, _| c.lib(Method::Bilinear, false)),
+    // X-Trans: Ppg is the directional interpolation (unbalanced: the old default), Ahd what ships
+    v("directional", |c, _| c.lib(Method::Ppg, false)),
+    v("lib", |c, _| c.lib(Method::Ahd, true)),
     // oracle: true green, so only the red/blue stage errs
     v("O:g+cd", |c, _| {
         let m = c.m();
