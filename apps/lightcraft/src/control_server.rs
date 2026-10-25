@@ -94,6 +94,33 @@ fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context, id
         ctx.request_repaint();
         Some(await_reply(&rrx, &state, || ctx.cumulative_pass_nr(), || ctx.request_repaint(), NO_FRAMES_AFTER, REPLY_TIMEOUT))
     });
+    close_gracefully(&stream);
+}
+
+/// How long [`close_gracefully`] waits for the peer to close, and how much input it discards.
+const LINGER: Duration = Duration::from_millis(250);
+const LINGER_MAX_BYTES: usize = 1 << 20;
+
+/// Close so the last reply reaches the peer. Closing a socket with unread input sends a reset,
+/// and on Windows a reset makes the peer drop replies it has received but not read yet (the
+/// "closing the connection" error after junk). So: send FIN after the replies, then discard what
+/// the peer still sends until it closes, for at most [`LINGER`] and [`LINGER_MAX_BYTES`].
+fn close_gracefully(stream: &TcpStream) {
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let deadline = std::time::Instant::now() + LINGER;
+    let mut sink = [0u8; 4096];
+    let mut drained = 0usize;
+    let mut read = stream;
+    while drained < LINGER_MAX_BYTES {
+        let Some(left) = deadline.checked_duration_since(std::time::Instant::now()).filter(|d| !d.is_zero()) else { break };
+        if read.set_read_timeout(Some(left)).is_err() {
+            break;
+        }
+        match read.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => drained = drained.saturating_add(n),
+        }
+    }
 }
 
 /// Wait for a request's reply. While the app has not picked the request up and `frames` (its
@@ -502,12 +529,15 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (s, _) = listener.accept().unwrap();
-            let read = s.try_clone().unwrap();
-            serve_lines(read, s, |_, _| Some(json!({"ok": true})));
+            serve_lines(&s, &s, |_, _| Some(json!({"ok": true})));
+            close_gracefully(&s);
         });
         let mut c = TcpStream::connect(addr).unwrap();
         c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         c.write_all(b"{\"id\":7,\"method\":\"x\"}\nhello\n{\"method\":\"y\"}\n").unwrap();
+        // Input the server never reads (past its 8 KiB buffer): closing on it unread sent a reset,
+        // which on Windows dropped both replies before the client read them.
+        c.write_all(&vec![b'z'; 32 << 10]).unwrap();
         let mut text = String::new();
         c.read_to_string(&mut text).unwrap(); // returns at EOF: the server closed the connection
         server.join().unwrap();
