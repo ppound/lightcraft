@@ -105,6 +105,11 @@ const LINGER_MAX_BYTES: usize = 1 << 20;
 /// and on Windows a reset makes the peer drop replies it has received but not read yet (the
 /// "closing the connection" error after junk). So: send FIN after the replies, then discard what
 /// the peer still sends until it closes, for at most [`LINGER`] and [`LINGER_MAX_BYTES`].
+///
+/// Past either bound the stream is dropped anyway, and a peer still sending may get the reset (and
+/// lose the replies) after all: draining until EOF is the only guarantee, and it would let a peer
+/// that never stops sending hold one of the [`MAX_CONNECTIONS`] slots for good. The protocol says
+/// so (`docs/control-protocol.md`, "Only requests are read").
 fn close_gracefully(stream: &TcpStream) {
     let _ = stream.shutdown(std::net::Shutdown::Write);
     let deadline = std::time::Instant::now() + LINGER;

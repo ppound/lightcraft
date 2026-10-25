@@ -36,7 +36,10 @@ optional; blank lines are skipped). Anything else — text that isn't JSON, a JS
 it on that connection runs. This keeps an HTTP request (for example a web page's cross-origin `fetch` to
 `127.0.0.1:<port>`) from smuggling a command in its body: its request line is rejected first. Junk never reaches the
 UI thread, and at most 16 connections are served at once (further ones get an error line and are closed). Clients
-that hit an error reply should reconnect. The port has no authentication, so only enable it when you need it. The MCP server's connect
+that hit an error reply should reconnect. The replies before the close (the error included) are delivered when the
+client stops sending and closes within 250 ms (the server discards up to 1 MiB of further input meanwhile); a client
+that keeps sending or holding the connection longer may get a reset instead, and on Windows a reset can drop replies
+it has not read yet. The bound keeps a client that never stops sending from holding a connection slot. The port has no authentication, so only enable it when you need it. The MCP server's connect
 mode ([mcp.md](mcp.md)) is a thin layer over this channel. Implementation:
 `crates/ui-egui/src/control.rs` (methods) and `apps/lightcraft/src/control_server.rs` (transport).
 
