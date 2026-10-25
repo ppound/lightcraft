@@ -60,9 +60,14 @@ fn main() {
         return;
     }
 
-    // Pick evenly spaced files.
-    let selected: Vec<_> =
-        if rafs.len() <= count { rafs.clone() } else { (0..count).map(|i| rafs[i * (rafs.len() - 1) / (count - 1)].clone()).collect() };
+    // Pick evenly spaced files (one or none: the first, as spacing divides by `count - 1`).
+    let selected: Vec<_> = if rafs.len() <= count {
+        rafs.clone()
+    } else if count <= 1 {
+        rafs.iter().take(count).cloned().collect()
+    } else {
+        (0..count).map(|i| rafs[i * (rafs.len() - 1) / (count - 1)].clone()).collect()
+    };
 
     eprintln!("selected {} of {} RAF files", selected.len(), rafs.len());
     std::fs::create_dir_all(out_dir).unwrap();

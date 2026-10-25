@@ -53,11 +53,12 @@ demosaics it with every variant and scores CPSNR and chroma RMSE in sRGB. 13 rea
 (`TEST_REAL` in `main.rs`; near-duplicate pairs stay on one side); the other 25 train the filters. Scenes from
 `scikit-image` (natural photos, test only) and four synthetic stress patterns are scored too.
 
-Regenerate the filters (about a minute):
+Regenerate the filters (about a minute). Only variants that use the `prod` set train it, so `XB_ONLY` names
+`proto` (which writes the filters) and `lib` (which scores the shipped path):
 
 ```
 cargo run --release -p lightcraft-raw --example xtrans_truth -- corpus/raw <truth dir>
-XB_AUG=8 XB_WRITE=crates/raw/src/demosaic/xtrans_taps.rs XB_ONLY=lib \
+XB_AUG=8 XB_WRITE=crates/raw/src/demosaic/xtrans_taps.rs XB_ONLY=proto,lib \
   cargo run --release -p lightcraft-raw --example xtrans_bench -- <scene dir> <truth dir>
 ```
 
