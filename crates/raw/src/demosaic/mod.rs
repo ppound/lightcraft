@@ -117,9 +117,10 @@ pub fn demosaic_with(n: &Normalized, method: Method, opts: Options) -> Rgb32f {
         },
         (None, _) => Rgb32f { width: w, height: h, data: n.data.iter().map(|&v| [v; 3]).collect() },
         (Some(cfa), _) => {
-            // every interpolator below indexes `w × h` samples: a shorter buffer gets the empty image
+            // every interpolator below indexes `w × h` samples: a shorter buffer (or dimensions that
+            // overflow) gets a 0 × 0 image, as allocating `w × h` for it could fail just the same
             if w.checked_mul(h).is_none_or(|len| n.data.len() < len) {
-                return Rgb32f::new(w, h);
+                return Rgb32f::new(0, 0);
             }
             let m = Mosaic { w, h, data: &n.data, cfa };
             if !cfa.is_bayer() {
@@ -356,13 +357,17 @@ mod tests {
     #[test]
     fn a_short_mosaic_gives_the_empty_image_instead_of_panicking() {
         // `Normalized` fields are public: a buffer shorter than `width × height` reached the
-        // interpolators, which index every sample (the X-Trans fallback panicked past the end)
+        // interpolators, which index every sample (the X-Trans fallback panicked past the end);
+        // dimensions that overflow, or are huge over a few samples, must not be allocated either
         for cfa in [Cfa::xtrans(), Cfa::bayer("RGGB").unwrap()] {
-            let mut n = mosaic_from_rgb(&edgy_scene(48, 36), &cfa);
-            n.data.truncate(48 * 36 - 100);
-            for m in [Method::Bilinear, Method::Ppg, Method::Ahd] {
-                let out = demosaic(&n, m);
-                assert_eq!((out.width, out.height, out.data.len()), (48, 36, 48 * 36), "{m:?}");
+            let mut short = mosaic_from_rgb(&edgy_scene(48, 36), &cfa);
+            short.data.truncate(48 * 36 - 100);
+            let huge = |width, height| Normalized { width, height, cpp: 1, data: vec![0.5; 64], cfa: Some(cfa.clone()) };
+            for n in [short, huge(usize::MAX, 2), huge(1 << 20, 1 << 20)] {
+                for m in [Method::Bilinear, Method::Ppg, Method::Ahd] {
+                    let out = demosaic(&n, m);
+                    assert_eq!((out.width, out.height, out.data.len()), (0, 0, 0), "{m:?} {}×{}", n.width, n.height);
+                }
             }
         }
     }
