@@ -12,8 +12,13 @@ use serde::Deserialize;
 /// Format version of the look files.
 const VERSION: u32 = 1;
 
-/// Looks built into LightCraft: `(model, JSON)`.
-pub const BUNDLED: &[(&str, &str)] = &[("X-T4", include_str!("../../../assets/camera-looks/X-T4.json"))];
+/// Looks built into LightCraft: `(model, JSON)`. A file may say the raw exposure bias its looks were measured at
+/// (`raw_exposure_bias`, [`exposure`]); without it a look brightens by the dynamic range setting alone.
+pub const BUNDLED: &[(&str, &str)] = &[
+    ("X-T4", include_str!("../../../assets/camera-looks/X-T4.json")),
+    // fitted to camera conversions of photos rather than measured on charts (`docs/camera-preview-colour.md`)
+    ("X-T5", include_str!("../../../assets/camera-looks/X-T5.json")),
+];
 
 #[derive(Deserialize)]
 struct LookFile {
@@ -27,6 +32,14 @@ struct LookFile {
     node_offset: f64,
     node_step: f64,
     looks: Vec<Entry>,
+}
+
+/// A look file's camera and the raw exposure bias (EV, Fujifilm RAF record `0x9650`) its looks were measured at.
+#[derive(Deserialize)]
+struct Reference {
+    model: String,
+    #[serde(default)]
+    raw_exposure_bias: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -126,6 +139,30 @@ pub fn all() -> &'static [Arc<Look>] {
         }
         out
     })
+}
+
+/// The raw exposure bias the built-in looks of camera `model` were measured at, when their file says.
+fn reference_bias(model: &str) -> Option<f64> {
+    static BIAS: OnceLock<Vec<(String, f64)>> = OnceLock::new();
+    let all = BIAS.get_or_init(|| {
+        BUNDLED
+            .iter()
+            .filter_map(|(_, json)| serde_json::from_str::<Reference>(json).ok())
+            .filter_map(|r| Some((r.model, r.raw_exposure_bias.filter(|b| b.is_finite() && b.abs() <= 16.0)?)))
+            .collect()
+    });
+    all.iter().find(|(m, _)| m.eq_ignore_ascii_case(model.trim())).map(|(_, b)| *b)
+}
+
+/// The gain a look of camera `model` applies to a raw before it ([`looks::CameraRgb::exposure`]): with the raw's own
+/// exposure bias `bias` and a file that says its reference, the difference (a raw exposed a stop under its looks'
+/// reference is brightened a stop: dynamic range settings and, on an X-T5, ISO 125 and 200 alike); otherwise the
+/// dynamic range setting `dynamic_range` (DR200 brightens a stop).
+pub fn exposure(model: &str, bias: Option<f64>, dynamic_range: Option<u32>) -> f32 {
+    match (reference_bias(model), bias.filter(|b| b.is_finite() && b.abs() <= 16.0)) {
+        (Some(reference), Some(bias)) => (reference - bias).exp2() as f32,
+        _ => dynamic_range.map_or(1.0, |dr| dr as f32 / 100.0),
+    }
 }
 
 /// The built-in looks of camera `model` (as its files report it), in the order the file lists them.
@@ -361,6 +398,25 @@ mod tests {
     }
 
     /// A newer format, a node short, a non-hexadecimal node or no step is refused.
+    #[test]
+    fn a_file_that_names_its_exposure_bias_brightens_by_the_raws_own() {
+        // the X-T5 file: eleven looks, registered like the X-T4's
+        let xt5 = for_model("X-T5");
+        assert_eq!(xt5.len(), 11);
+        assert!(xt5.iter().all(|l| l.id.starts_with("look:x-t5/") && lightcraft_pipeline::looks::get(&l.id).is_some()));
+        assert_eq!(reference_bias("X-T5"), Some(-1.72));
+        assert_eq!(reference_bias("X-T4"), None);
+        // X-T5: an ISO 125 raw (a stop brighter) is darkened a stop, a DR200 raw brightened, DR100 left alone
+        assert!((exposure("X-T5", Some(-0.72), None) - 0.5).abs() < 1e-6);
+        assert!((exposure("X-T5", Some(-2.72), Some(200)) - 2.0).abs() < 1e-6);
+        assert!((exposure("X-T5", Some(-1.72), Some(100)) - 1.0).abs() < 1e-6);
+        // without the raw's bias, or for a file that names none, the dynamic range setting
+        assert_eq!(exposure("X-T5", None, Some(200)), 2.0);
+        assert_eq!(exposure("X-T4", Some(-0.72), Some(200)), 2.0);
+        assert_eq!(exposure("X-T4", Some(-0.72), None), 1.0);
+        assert_eq!(exposure("X-T5", Some(f64::NAN), Some(100)), 1.0);
+    }
+
     #[test]
     fn damaged_look_files_are_refused() {
         let (_, json) = BUNDLED[0];

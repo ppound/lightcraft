@@ -67,7 +67,7 @@ fn denoised_camera_rgb(raw: &lightcraft_raw::RawImage, spec: &DenoiseSpec, facto
 /// own multipliers (green 1) and scaled so 1 is the sensor's full range (the white level is the top of the data when
 /// the frame is clipped, a little below full range), so the matrix recorded here takes that camera RGB to the decoded
 /// pixels. `for_look`: the decode leaves the starting colour's hue/saturation table out. `None` without the file's
-/// multipliers.
+/// multipliers. The look's exposure: [`crate::camera_looks::exposure`].
 fn look_camera_rgb(
     raw: &lightcraft_raw::RawImage,
     t: &lightcraft_raw::color::CameraTransform,
@@ -89,13 +89,8 @@ fn look_camera_rgb(
     let m = look.map_or(t.matrix, |l| l.matrix.mul(&t.matrix)).mul(&lightcraft_color::Mat3::diag(wb[0], wb[1], wb[2]));
     let matrix = lightcraft_color::Mat3(m.0.map(|r| r.map(|v| v * k))).to_f32();
     let hue_sat = look.and_then(|l| l.hue_sat.clone()).map(std::sync::Arc::new);
-    Some(lightcraft_pipeline::looks::CameraRgb {
-        model,
-        matrix,
-        deferred: for_look && hue_sat.is_some(),
-        hue_sat,
-        exposure: dynamic_range.map_or(1.0, |dr| dr as f32 / 100.0),
-    })
+    let exposure = crate::camera_looks::exposure(&model, raw.metadata.raw_exposure_bias, dynamic_range);
+    Some(lightcraft_pipeline::looks::CameraRgb { model, matrix, deferred: for_look && hue_sat.is_some(), hue_sat, exposure })
 }
 
 /// Decode `bytes` into the picture the pipeline takes, with its denoised twin when `denoise` asks for one.

@@ -229,6 +229,12 @@ measured look (100 %). Looks render on the CPU, as LUT profiles do.
   agreed with the dynamic range the camera itself reported converting them at) and the look takes camera RGB scaled by
   it over 100. The per-file fit absorbs this into its tone curve today, which is why it only shows once a fixed rendering
   is applied; 62 % of the contributor's X-T4 raws are DR200. DR400 is not measured.
+  A look file may instead name the raw exposure bias its looks were made at (`raw_exposure_bias`, the X-T5's):
+  the RAF header records the EV by which the camera exposed the sensor under its rendering (record `0x9650`,
+  `Metadata::raw_exposure_bias`), and a raw with another bias is brightened by the difference
+  (`camera_looks::exposure`). That covers the dynamic range setting and more: an X-T5 records -1.72 at DR100 from
+  ISO 250 but -0.72 at ISO 125 and 200, which the dynamic range alone rendered a stop bright (CIE76 dE about 17 from
+  the camera on those photos, 2.5 to 4.6 with the bias). The X-T4 file names none and keeps the dynamic range scaling.
 - **Scale.** Camera RGB is taken relative to the sensor's full range (16,383 at 14 bits), as the looks were measured, not
   to the white level estimated from a clipped frame (`white_from_data`), which sits a little below it.
 
@@ -273,6 +279,48 @@ settings are not part of the looks (each is the camera's default). A photo shown
 original is offline renders its starting look instead of a look. One with an AI-denoised picture is decoded plainly,
 and so is every photo in the web build, which has no separate decode for looks: their looks undo the table
 approximately. HDR renders show a look in SDR range.
+
+### Fitted looks (Fujifilm X-T5)
+
+The X-T5's eleven colour film simulations (the X-T4's nine plus REALA ACE and Nostalgic Neg.) are looks in the same
+form (`assets/camera-looks/X-T5.json`, listed under "X-T5 looks, fitted"), but fitted to photos instead of measured on
+charts. X RAW STUDIO converts a raw on the connected camera, so it gives the camera's own rendering of the same raw in
+every film simulation: 80 of the contributor's X-T5 raws, picked by script from 58 shoots for light colour and ISO
+(125 to 12,800), were converted in each simulation at DR100 with the camera's other settings at their defaults. They
+were split by shoot: 62 to fit, 18 from 12 other shoots held out.
+
+- **Starting grid.** Per simulation, a profile in the starting look's form (matrix and hue/saturation table, then a
+  tone and chroma curve pooled over the photos as their median on the exposure-bias-corrected scale) is baked into
+  the grid (`crates/engine/examples/bake_look.rs`). This form was the limit found for the X-T4 above: 2.96 CIE76 dE
+  mean on the held-out photos.
+- **Node fit.** The `probe_look` example swaps a look for one whose nodes hold their own CIELAB coordinates; trilinear
+  interpolation reproduces that exactly, so a 32-bit linear export through it is, per pixel, the colour the app hands
+  the look, after decoding, lens corrections, capture sharpening and the exposure bias. `tools/fit_look.py` pairs
+  those with the camera's conversions shrunk to 300 px (edges and borders left out, where the two lens corrections
+  and resamplings differ) and fits every node by least squares with a second-difference smoothness penalty, the
+  starting grid as a weak prior where the photos have no colour. The smoothness weight was chosen on 12 of the 62 (PROVIA).
+
+On the 18 held-out raws, exported by `lightcraft-cli` at a 1,200-pixel long edge and compared with the camera's sRGB
+conversion at 200 px (the median over photos of each photo's mean ΔE2000; a coarser measure than the X-T4's flat
+blocks, so not directly comparable with its table):
+
+| Look | LightCraft's starting look | Starting grid | Fitted |
+|---|---:|---:|---:|
+| Standard (PROVIA) | 4.00 | 2.18 | 1.24 |
+| Vivid (Velvia) | 5.46 | 2.48 | 1.40 |
+| Soft (ASTIA) | 4.00 | 2.25 | 1.25 |
+| Muted (Classic Chrome) | 4.96 | 2.35 | 1.11 |
+| Natural (REALA ACE) | 3.88 | 2.31 | 1.25 |
+| Portrait Hi (PRO Neg. Hi) | 4.90 | 2.26 | 1.18 |
+| Portrait (PRO Neg. Std) | 3.79 | 2.16 | 1.13 |
+| Negative (Classic Neg.) | 6.86 | 3.72 | 1.11 |
+| Nostalgic (Nostalgic Neg.) | 4.28 | 2.50 | 1.30 |
+| Cinema (ETERNA) | 3.85 | 2.05 | 1.09 |
+| Bleach Bypass (ETERNA Bleach Bypass) | 7.21 | 2.57 | 0.97 |
+
+Every held-out photo is nearer the camera in every simulation after the node fit than before it (CIE76). The worst is a warm
+ISO 2,500 frame (2.9 to 3.6 CIE76 dE). **Limits:** the X-T5 only, DR100 only (DR200 and DR400 rely on the exposure
+bias), 80 photos rather than charts (colours no photo holds keep the starting grid's), and the X-T4's other limits.
 
 ## Sony Dynamic Range Optimizer (DRO)
 

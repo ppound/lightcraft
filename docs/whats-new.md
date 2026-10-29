@@ -1,5 +1,14 @@
 # What's new in LightCraft
 
+## 2026-10-29
+
+### Fujifilm X-T5 film simulation looks
+- X-T5 raws can now be shown in each of the camera's eleven colour film simulations, including REALA ACE and
+  Nostalgic Neg.: open the profile browser and pick one from "X-T5 looks, fitted". Each look was fitted to the X-T5's
+  own conversions of photos in that simulation; on photos it was not fitted to, it lands a median of 1.0 to 1.4
+  ΔE2000 from the camera's conversion, depending on the look. Photos shot at ISO 125 and 200, whose raws the camera
+  exposes a stop differently, are rendered to match too. Fitted from the camera; not made or endorsed by Fujifilm.
+
 ## 2026-10-24
 
 ### Relative-date filters and smart albums follow the clock
