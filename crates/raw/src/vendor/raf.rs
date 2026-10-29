@@ -1,7 +1,8 @@
 //! Fujifilm RAF — uncompressed, lossless compressed and lossy compressed Bayer and X-Trans.
 //!
 //! Sources: the ExifTool FujiFilm tag-name documentation (RAF header record tags `0x0100` RawImageFullSize,
-//! `0x0110` RawImageCropTopLeft, `0x0111` RawImageCroppedSize, `0x0131` XTransLayout; raw-IFD tags `0xf001`
+//! `0x0110` RawImageCropTopLeft, `0x0111` RawImageCroppedSize, `0x0131` XTransLayout, `0x9650` RawExposureBias;
+//! raw-IFD tags `0xf001`
 //! width, `0xf002` height, `0xf003` bits, `0xf007` strip offset, `0xf008` strip byte count, `0xf00a` black
 //! levels, `0xf00e` WB_GRBLevels) and our own black-box analysis of CC0 samples from raw.pixls.us:
 //!
@@ -31,6 +32,9 @@ use rayon::prelude::*;
 const CROP_TOP_LEFT: u16 = 0x0110;
 const CROPPED_SIZE: u16 = 0x0111;
 const XTRANS_LAYOUT: u16 = 0x0131;
+/// Record `0x9650`: EV the camera applied to the raw for its JPEG, as a signed numerator and a denominator (`i16`,
+/// `u16`; -172 / 100 on an X-T5 at ISO 250).
+const RAW_EXPOSURE_BIAS: u16 = 0x9650;
 /// Raw-IFD flag `0xf006`: 1 in every 12- and 14-bit file here whose samples are packed into 32-bit words (the 12-bit
 /// ones are otherwise an LSB-first stream), 0 where they are an LSB-first stream or 16-bit words.
 const PACKED_WORDS: u16 = 0xf006;
@@ -105,6 +109,14 @@ pub(crate) fn raw_ifd(raw: &[u8]) -> Result<Ifd> {
     let off = tiff.ifds.first().and_then(|i| i.u64(0xf000)).ok_or_else(|| RawError::Unsupported("RAF without a raw IFD".into()))?;
     let (ifd, _) = lightcraft_tiff::parse_ifd_at(raw, off, ByteOrder::Little, 0, false, &Default::default())?;
     Ok(ifd)
+}
+
+/// [`RAW_EXPOSURE_BIAS`] in EV; `None` without it or with a zero denominator or a value beyond ±16 EV.
+fn raw_exposure_bias(h: &Header) -> Option<f64> {
+    let d = record(h, RAW_EXPOSURE_BIAS).filter(|d| d.len() >= 4)?;
+    let (num, den) = (i16::from_be_bytes([d[0], d[1]]), u16::from_be_bytes([d[2], d[3]]));
+    let ev = f64::from(num) / f64::from(den);
+    (den != 0 && ev.abs() <= 16.0).then_some(ev)
 }
 
 /// The camera name in the file header (bytes 28..60, NUL padded): the Exif `Model` of every sample.
@@ -208,6 +220,7 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
     let white = white_from_data(&data, bits);
 
     let mut metadata = h.jpeg.map(lightcraft_meta::extract).unwrap_or_default();
+    metadata.raw_exposure_bias = raw_exposure_bias(&h);
     metadata.width = Some(active.width as u32);
     metadata.height = Some(active.height as u32);
     let orientation = metadata.orientation.unwrap_or(Orientation::Normal);
@@ -518,6 +531,18 @@ pub(super) mod tests {
         assert!(crate::decode(&bytes).unwrap().opcodes.list3.iter().all(|o| !matches!(o, crate::Opcode::WarpRectilinear { .. })));
         let bytes = raf_full(w, h, 16, pack(&[1000; 96], 16), None, b"", 0, "X-T4", &[]);
         assert!(crate::decode(&bytes).unwrap().opcodes.list3.is_empty());
+    }
+
+    #[test]
+    fn raw_exposure_bias_is_read_in_ev_and_bounded() {
+        let bias = |d: &[u8]| raw_exposure_bias(&Header { jpeg: None, records: vec![(RAW_EXPOSURE_BIAS, d)], raw: None });
+        assert_eq!(bias(&[0xff, 0x54, 0x00, 0x64]), Some(-1.72));
+        assert_eq!(bias(&[0x00, 0x48, 0x00, 0x64]), Some(0.72));
+        // no denominator, out of range, short
+        assert_eq!(bias(&[0xff, 0x54, 0x00, 0x00]), None);
+        assert_eq!(bias(&[0x7f, 0xff, 0x00, 0x01]), None);
+        assert_eq!(bias(&[0xff, 0x54]), None);
+        assert_eq!(raw_exposure_bias(&Header { jpeg: None, records: vec![], raw: None }), None);
     }
 
     #[test]
