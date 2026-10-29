@@ -163,6 +163,9 @@ def main():
             r = pairs(probe_dir, stem, jdir, edge, lax, abx)
             if r is not None:
                 ins.append(r[0]); tgs.append(r[1])
+        if sum(len(v) for v in ins) == 0:
+            print(f"{lid}: no usable pixels in its {len(blocks[lid])} listed raws; its nodes are left as they were", file=sys.stderr, flush=True)
+            continue
         lab, y = np.concatenate(ins), np.concatenate(tgs)
         W = weights(lab, lax, abx)
         # normalise so the regularisers mean the same whatever the pixel count: per 10k pixels
@@ -179,8 +182,11 @@ def main():
                 r = pairs(probe_dir, stem, jdir, edge, lax, abx)
                 if r is not None:
                     vi.append(r[0]); vt.append(r[1])
-            Wv, yv = weights(np.concatenate(vi), lax, abx), np.concatenate(vt)
-            msg += f", val dE {np.mean(np.linalg.norm(lab_of_enc(Wv @ x0) - lab_of_enc(yv), axis=-1)):.2f} -> {np.mean(np.linalg.norm(lab_of_enc(Wv @ x) - lab_of_enc(yv), axis=-1)):.2f}"
+            if sum(len(v) for v in vi) == 0:
+                msg += ", no usable validation pixels"
+            else:
+                Wv, yv = weights(np.concatenate(vi), lax, abx), np.concatenate(vt)
+                msg += f", val dE {np.mean(np.linalg.norm(lab_of_enc(Wv @ x0) - lab_of_enc(yv), axis=-1)):.2f} -> {np.mean(np.linalg.norm(lab_of_enc(Wv @ x) - lab_of_enc(yv), axis=-1)):.2f}"
         print(msg, flush=True)
         look["nodes"] = encode(x, off, step)
     json.dump(f, open(out, "w", encoding="utf-8"))

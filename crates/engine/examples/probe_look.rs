@@ -45,6 +45,15 @@ fn main() -> Result<(), String> {
     let o =
         ExportOptions::from_params(&json!({"format": "tiff", "bitDepth": 32, "colorSpace": "adobeRgb", "longEdge": edge, "tiffCompression": "none"}))
             .map_err(|e| e.to_string())?;
+    // one probe per file name: two raws of the same name (another folder, a camera's numbering wrapping round) would
+    // overwrite each other's probe, and the fit would pair one raw's probe with the other's conversion
+    let stem_of = |raf: &str| std::path::Path::new(raf).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let mut seen = std::collections::HashMap::new();
+    for raf in rafs {
+        if let Some(first) = seen.insert(stem_of(raf), raf) {
+            return Err(format!("{first} and {raf} have the same name: rename one, or probe them into different folders"));
+        }
+    }
     for raf in rafs {
         let path = std::fs::canonicalize(raf).map_err(|e| format!("{raf}: {e}"))?.to_string_lossy().to_string();
         let mut s = Session::new().with_fs();
@@ -53,7 +62,7 @@ fn main() -> Result<(), String> {
         s.execute("library.select", &json!({"ids": [pid], "active": pid})).map_err(|e| e.to_string())?;
         s.execute("develop.merge", &json!({"settings": {"profile": {"id": id, "amount": 100}}})).map_err(|e| e.to_string())?;
         let e = export_photo(&mut s, PhotoId(pid), &o, 1)?;
-        let stem = std::path::Path::new(raf).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let stem = stem_of(raf);
         let dst = std::path::Path::new(out).join(format!("{stem}.tif"));
         std::fs::write(&dst, &e.bytes).map_err(|err| format!("{}: {err}", dst.display()))?;
         eprintln!("{stem}: {}x{}", e.width, e.height);
