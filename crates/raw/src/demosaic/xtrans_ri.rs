@@ -268,10 +268,9 @@ fn tile(m: &Mosaic, t: &Tables, gains: [f32; 3], (ox, oy): (usize, usize), x0: u
     let (w, h) = (m.w, m.h);
     let n = SIDE * SIDE;
     let at = |i: usize, d: isize| (i as isize + d) as usize;
-    let ones7 = [1f32; 7];
     let ones5 = [1f32; 5];
-    let Scratch { phase, class, v, raw, gd, g, red, blue, tmp, w: work, out } = s;
-    let [w0, w1, w2, w3, w4, w5, w6, w7, w8] = work;
+    let Scratch { phase, class, v, raw, gd, g, tmp, w: work, .. } = s;
+    let [w0, w1, w2, w3, w4, w5, w6, ..] = work;
 
     // 1. canonical phase and balanced mosaic of every buffer pixel, with its camera sample kept for the output
     let (px0, py0) = ((x0 + ox + 6 * HALO - HALO) % 6, (y0 + oy + 6 * HALO - HALO) % 6);
@@ -384,11 +383,36 @@ fn tile(m: &Mosaic, t: &Tables, gains: [f32; 3], (ox, oy): (usize, usize), x0: u
 
     // 5. red and blue by residual interpolation
     for (k, c) in [0u8, 2].into_iter().enumerate() {
+        s.red_blue(t, k, c);
+    }
+
+    // 6. back to camera RGB; native samples as they were
+    let Scratch { phase, raw, g, red, blue, out, .. } = s;
+    let inv = gains.map(|v| 1.0 / v);
+    for ty in 0..TILE {
+        for tx in 0..TILE {
+            let i = (ty + HALO) * SIDE + tx + HALO;
+            let mut px = [red[i] * inv[0], g[i] * inv[1], blue[i] * inv[2]];
+            px[t.colour[phase[i] as usize] as usize] = raw[i];
+            out[ty * TILE + tx] = px;
+        }
+    }
+}
+
+impl Scratch {
+    /// Stage 5 of [`tile`] for one colour (`k` 0: red, `c` 0; `k` 1: blue, `c` 2): the plane by residual
+    /// interpolation from the green and the balanced mosaic, valid on `[HALO, HALO + TILE)`.
+    fn red_blue(&mut self, t: &Tables, k: usize, c: u8) {
+        let n = SIDE * SIDE;
+        let at = |i: usize, d: isize| (i as isize + d) as usize;
+        let ones7 = [1f32; 7];
+        let Scratch { phase, v, g, red, blue, tmp, w: work, .. } = self;
+        let [w0, w1, w2, w3, _, w5, w6, w7, w8] = work;
         // masked sums over the colour's samples: Σg, Σc, Σg², Σgc (7 × 7 boxes, valid on [9, SIDE − 9)); their
         // count depends on the phase alone
         let mut prod = [&mut *w0, &mut *w1, &mut *w2, &mut *w3];
         for i in 6 * SIDE..n - 6 * SIDE {
-            let (gv, cv) = if colour(i) == c { (g[i], v[i]) } else { (0.0, 0.0) };
+            let (gv, cv) = if t.colour[phase[i] as usize] == c { (g[i], v[i]) } else { (0.0, 0.0) };
             prod[0][i] = gv;
             prod[1][i] = cv;
             prod[2][i] = gv * gv;
@@ -446,17 +470,6 @@ fn tile(m: &Mosaic, t: &Tables, gains: [f32; 3], (ox, oy): (usize, usize), x0: u
                 }
                 plane[i] = tent[i] + if ws > 0.0 { sr / ws } else { 0.0 };
             }
-        }
-    }
-
-    // 6. back to camera RGB; native samples as they were
-    let inv = gains.map(|v| 1.0 / v);
-    for ty in 0..TILE {
-        for tx in 0..TILE {
-            let i = (ty + HALO) * SIDE + tx + HALO;
-            let mut px = [red[i] * inv[0], g[i] * inv[1], blue[i] * inv[2]];
-            px[colour(i) as usize] = raw[i];
-            out[ty * TILE + tx] = px;
         }
     }
 }
